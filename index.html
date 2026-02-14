@@ -20,7 +20,10 @@
             flex-direction: column;
             align-items: center;
             margin: 0;
+            /* Previene selecciones y gestos de scroll/zoom en pantallas táctiles */
             user-select: none;
+            -webkit-user-select: none; 
+            touch-action: none; 
         }
 
         /* UI Superior */
@@ -49,7 +52,7 @@
 
         /* Piezas Inferiores */
         #pieces-container { margin-top: 30px; display: flex; gap: 40px; height: 160px; align-items: center; }
-        .piece { display: grid; gap: 2px; cursor: grab; }
+        .piece { display: grid; gap: 2px; cursor: grab; touch-action: none; }
         .piece:active { cursor: grabbing; }
         .piece-cell { width: 30px; height: 30px; background-color: var(--block-color); border-radius: 3px; pointer-events: none; }
         .empty-piece-cell { width: 30px; height: 30px; visibility: hidden; pointer-events: none; }
@@ -62,13 +65,14 @@
         .shop-content { background: #222; padding: 30px; border-radius: 15px; border: 2px solid var(--gold); text-align: center; }
         .pet-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px; margin: 20px 0; }
         .pet-card { background: #333; padding: 15px; border-radius: 10px; display: flex; flex-direction: column; align-items: center; }
+        
         @keyframes shake {
-    0% { transform: translate(1px, 1px) rotate(0deg); }
-    10% { transform: translate(-1px, -2px) rotate(-1deg); }
-    30% { transform: translate(3px, 2px) rotate(0deg); }
-    50% { transform: translate(-1px, 2px) rotate(1deg); }
-    100% { transform: translate(1px, 1px) rotate(0deg); }
-}
+            0% { transform: translate(1px, 1px) rotate(0deg); }
+            10% { transform: translate(-1px, -2px) rotate(-1deg); }
+            30% { transform: translate(3px, 2px) rotate(0deg); }
+            50% { transform: translate(-1px, 2px) rotate(1deg); }
+            100% { transform: translate(1px, 1px) rotate(0deg); }
+        }
     </style>
 </head>
 <body>
@@ -78,7 +82,7 @@
         <button id="btn-shop">🏪 TIENDA</button>
         <button id="btn-clear-board" style="background: #e67e22; color: white; border: none; padding: 10px 20px; border-radius: 20px; cursor: pointer; font-weight: bold;">
     💣 LIMPIAR TABLERO (-100 pts)
-</button>
+        </button>
     </div>
 
     <div id="game-layout">
@@ -115,7 +119,9 @@
             [[1, 1], [0, 1], [0, 1]]
         ];
 
-        // --- INICIO ---
+        // Variable global para manejar el arrastre (mouse + touch)
+        let draggingPieceInfo = null;
+
         function init() {
             renderGrid();
             spawnPieces();
@@ -127,13 +133,9 @@
                 for (let c = 0; c < GRID_SIZE; c++) {
                     const cell = document.createElement('div');
                     cell.className = `cell ${grid[r][c] ? 'filled' : ''}`;
-                    
-                    cell.ondragover = (e) => {
-                        e.preventDefault();
-                        cell.classList.add('drag-over');
-                    };
-                    cell.ondragleave = () => cell.classList.remove('drag-over');
-                    cell.ondrop = (e) => handleDrop(e, r, c);
+                    // Guardamos la posición directamente en los atributos del elemento
+                    cell.dataset.r = r;
+                    cell.dataset.c = c;
                     
                     gridElement.appendChild(cell);
                 }
@@ -148,7 +150,6 @@
                 
                 const pieceDiv = document.createElement('div');
                 pieceDiv.className = 'piece';
-                pieceDiv.draggable = true;
                 pieceDiv.style.gridTemplateColumns = `repeat(${shape[0].length}, 30px)`;
 
                 shape.forEach((row, r) => {
@@ -159,47 +160,105 @@
                     });
                 });
 
-                // Capturamos el punto de agarre exacto
-                pieceDiv.onmousedown = (e) => {
+                // INICIO DEL EVENTO POINTER DOWN (Mouse + Touch)
+                pieceDiv.addEventListener('pointerdown', (e) => {
+                    e.preventDefault();
+                    
                     const rect = pieceDiv.getBoundingClientRect();
                     const offsetX = e.clientX - rect.left;
                     const offsetY = e.clientY - rect.top;
-                    // Guardamos la celda aproximada donde el usuario hizo clic
-                    pieceDiv.dataset.grabR = Math.floor(offsetY / 32);
-                    pieceDiv.dataset.grabC = Math.floor(offsetX / 32);
-                };
+                    
+                    const grabR = Math.floor(offsetY / 32);
+                    const grabC = Math.floor(offsetX / 32);
 
-                pieceDiv.ondragstart = (e) => {
-                    e.dataTransfer.setData('shapeIdx', shapeIdx);
-                    pieceDiv.classList.add('dragging');
-                };
+                    // Creamos un clon visual que seguirá el dedo/mouse
+                    const clone = pieceDiv.cloneNode(true);
+                    clone.style.position = 'fixed';
+                    clone.style.zIndex = '1000';
+                    clone.style.pointerEvents = 'none'; // Clave para detectar qué hay debajo
+                    clone.style.left = `${e.clientX - offsetX}px`;
+                    clone.style.top = `${e.clientY - offsetY}px`;
+                    clone.style.margin = '0';
+                    document.body.appendChild(clone);
+
+                    // Ocultamos la pieza original ligeramente
+                    pieceDiv.style.opacity = '0.3';
+
+                    // Guardamos la info para el movimiento y la soltada
+                    draggingPieceInfo = {
+                        shapeIdx,
+                        originalPiece: pieceDiv,
+                        clone,
+                        offsetX,
+                        offsetY,
+                        grabR,
+                        grabC
+                    };
+                });
 
                 piecesContainer.appendChild(pieceDiv);
             }
         }
 
-        function handleDrop(e, row, col) {
-            e.preventDefault();
-            const shapeIdx = e.dataTransfer.getData('shapeIdx');
-            const draggingPiece = document.querySelector('.dragging');
+        // EVENTO POINTER MOVE (Seguimiento del dedo/mouse)
+        document.addEventListener('pointermove', (e) => {
+            if (!draggingPieceInfo) return;
             
-            const grabR = parseInt(draggingPiece.dataset.grabR) || 0;
-            const grabC = parseInt(draggingPiece.dataset.grabC) || 0;
-            
-            const shape = SHAPES[shapeIdx];
-            const startR = row - grabR;
-            const startC = col - grabC;
+            const { clone, offsetX, offsetY } = draggingPieceInfo;
+            // Movemos el clon a la posición actual
+            clone.style.left = `${e.clientX - offsetX}px`;
+            clone.style.top = `${e.clientY - offsetY}px`;
 
-            if (canPlace(shape, startR, startC)) {
-                placePiece(shape, startR, startC);
-                draggingPiece.remove();
-                checkLines();
-                if (piecesContainer.children.length === 0) spawnPieces();
+            // Detectamos sobre qué celda del tablero estamos
+            const elemBelow = document.elementFromPoint(e.clientX, e.clientY);
+            
+            // Limpiamos los resaltados previos
+            document.querySelectorAll('.cell.drag-over').forEach(el => el.classList.remove('drag-over'));
+
+            if (elemBelow && elemBelow.classList.contains('cell')) {
+                elemBelow.classList.add('drag-over');
+            }
+        });
+
+        // EVENTO POINTER UP (Soltar pieza)
+        document.addEventListener('pointerup', (e) => {
+            if (!draggingPieceInfo) return;
+            
+            const { clone, originalPiece, shapeIdx, grabR, grabC } = draggingPieceInfo;
+            
+            // Eliminamos el clon visual
+            clone.remove();
+            
+            const elemBelow = document.elementFromPoint(e.clientX, e.clientY);
+            let piecePlaced = false;
+
+            if (elemBelow && elemBelow.classList.contains('cell')) {
+                const row = parseInt(elemBelow.dataset.r);
+                const col = parseInt(elemBelow.dataset.c);
+                
+                const shape = SHAPES[shapeIdx];
+                const startR = row - grabR;
+                const startC = col - grabC;
+
+                if (canPlace(shape, startR, startC)) {
+                    placePiece(shape, startR, startC);
+                    originalPiece.remove(); // Eliminamos del inventario inferior
+                    checkLines();
+                    piecePlaced = true;
+                    
+                    if (piecesContainer.children.length === 0) spawnPieces();
+                }
             }
             
+            // Si no se pudo colocar, restauramos la visibilidad de la pieza
+            if (!piecePlaced) {
+                originalPiece.style.opacity = '1';
+            }
+            
+            document.querySelectorAll('.cell.drag-over').forEach(el => el.classList.remove('drag-over'));
+            draggingPieceInfo = null; // Reseteamos la variable
             renderGrid();
-            draggingPiece?.classList.remove('dragging');
-        }
+        });
 
         function canPlace(shape, startR, startC) {
             for (let r = 0; r < shape.length; r++) {
@@ -207,7 +266,6 @@
                     if (shape[r][c]) {
                         const targetR = startR + r;
                         const targetC = startC + c;
-                        // Validar límites y ocupación
                         if (targetR < 0 || targetR >= GRID_SIZE || 
                             targetC < 0 || targetC >= GRID_SIZE || 
                             grid[targetR][targetC] === 1) {
@@ -257,7 +315,7 @@
             scoreElement.innerText = score;
         }
 
-        // --- SISTEMA DE TIENDA (Simplificado para el ejemplo) ---
+        // --- SISTEMA DE TIENDA ---
         const PETS = [
             { name: "Pio", emoji: "🐥", price: 100 },
             { name: "Rex", emoji: "🦖", price: 500 },
@@ -294,30 +352,22 @@
         init();
 
         document.getElementById('btn-clear-board').onclick = () => {
-    // Verificamos si tiene al menos 1 punto para que valga la pena
-    if (score <= 0) {
-        alert("¡Necesitas puntos para usar la bomba!");
-        return;
-    }
+            if (score <= 0) {
+                alert("¡Necesitas puntos para usar la bomba!");
+                return;
+            }
 
-    // Confirmación opcional
-    if (confirm("¿Quieres vaciar el tablero? Perderás 100 puntos (o todos si tienes menos).")) {
-        
-        // Aplicar penalización: Resta 100 o deja en 0 si tiene menos
-        score = Math.max(0, score - 100);
-        
-        // Vaciar la matriz del tablero
-        grid = Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill(0));
-        
-        // Actualizar la interfaz
-        renderGrid();
-        updateScoreUI();
-        
-        // Efecto visual simple
-        gridElement.style.animation = "shake 0.5s";
-        setTimeout(() => gridElement.style.animation = "", 500);
-    }
-};
+            if (confirm("¿Quieres vaciar el tablero? Perderás 100 puntos (o todos si tienes menos).")) {
+                score = Math.max(0, score - 100);
+                grid = Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill(0));
+                
+                renderGrid();
+                updateScoreUI();
+                
+                gridElement.style.animation = "shake 0.5s";
+                setTimeout(() => gridElement.style.animation = "", 500);
+            }
+        };
     </script>
 </body>
 </html>
